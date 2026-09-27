@@ -1,0 +1,6 @@
+# GPU profile for Windows/NVIDIA. Install this instead of requirements.txt.
+-r requirements.txt
+--index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://pypi.org/simple
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
