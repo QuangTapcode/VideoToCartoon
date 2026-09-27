@@ -9,10 +9,12 @@
 - [x] Đã tạo giao diện Streamlit để upload, xem trực tiếp video gốc/video hoạt hình và tải kết quả.
 - [x] Đã tạo và dùng video smoke test trong `input/`.
 - [x] Đã đặt checkpoint AnimeGANv2 tại `models/paprika.pt`.
+- [x] Đã thêm checkpoint chân dung `models/face_paint_512_v2.pt` và đặt làm style ưu tiên trong giao diện.
 - [x] Đã chạy suy luận thực tế trên smoke test.
 - [x] Đã chạy trên video thực tế mong muốn của người dùng.
 - [x] Đã điều chỉnh chất lượng hình: mặc định `load-size 640`, hỗ trợ chọn `768` và resize output bằng Lanczos4.
 - [x] Đã thêm nguồn input Facebook Reel công khai: tải bằng `yt-dlp`, preview và đưa vào pipeline xử lý.
+- [x] Đã thêm tính năng cắt đoạn video dài bằng FFmpeg, preview đoạn cắt và giữ audio trước khi chạy AnimeGANv2.
 
 ## Bước 0 — Mở giao diện Tool
 
@@ -72,6 +74,7 @@
 - [x] Chọn implementation PyTorch `bryandlee/animegan2-pytorch`.
 - [x] Chọn style tổng quát `paprika` cho bài test video.
 - [x] Tải `paprika.pt` và đặt đúng tại `models/paprika.pt`.
+- [x] Tải và kiểm tra `face_paint_512_v2.pt` từ implementation PyTorch chính thức.
 - [x] Kiểm tra file tồn tại và dung lượng: 8,603,556 bytes.
 - [x] Xác nhận framework bằng:
 
@@ -79,7 +82,7 @@
   python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
   ```
 
-**Ghi chú:** model dùng generator AnimeGANv2, input RGB `BCHW` trong `[-1,1]`, output qua `tanh`. Checkpoint đã nạp thành công vào `Generator`, model ở chế độ `eval`, có 2,143,552 tham số. Đã đổi sang `torch 2.11.0+cu128` và `torchvision 0.26.0+cu128`; CUDA runtime 12.8 nhận RTX 4060 Laptop GPU, `auto` chọn CUDA.
+**Ghi chú:** model dùng generator AnimeGANv2, input RGB `BCHW` trong `[-1,1]`, output qua `tanh`. Các checkpoint `paprika.pt` và `face_paint_512_v2.pt` đều nạp được vào `Generator`; Face Paint v2 được huấn luyện cho ảnh chân dung 512×512 và được ưu tiên trong giao diện. Đã đổi sang `torch 2.11.0+cu128` và `torchvision 0.26.0+cu128`; CUDA runtime 12.8 nhận RTX 4060 Laptop GPU, `auto` chọn CUDA.
 
 **Kết quả đã ghi:** `reports/step2_model_metadata.json`; style `paprika`, PyTorch `2.11.0+cu128`, device `cuda`, suy luận batch 4 thành công, VRAM cực đại khoảng 172.46 MB trong smoke test.
 

@@ -38,7 +38,7 @@ def load_model(model_path: Path, device: torch.device) -> Generator:
     if not model_path.is_file():
         raise FileNotFoundError(
             f"Không tìm thấy checkpoint: {model_path}. "
-            "Tải paprika.pt và đặt vào thư mục models."
+            "Tải một checkpoint AnimeGANv2 .pt và đặt vào thư mục models."
         )
 
     model = Generator()

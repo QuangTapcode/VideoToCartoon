@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,8 +32,14 @@ VIDEO_MIME_TYPES = {
 MODEL_LABELS = {
     "paprika": "Paprika, phong cách anime tổng quát",
     "face_paint_512_v1": "Face Paint v1, thiên về chân dung",
-    "face_paint_512_v2": "Face Paint v2, thiên về chân dung",
+    "face_paint_512_v2": "Face Paint v2 (512), ưu tiên chân dung",
     "celeba_distill": "CelebA Distill, khuôn mặt",
+}
+MODEL_PRIORITY = {
+    "face_paint_512_v2": 0,
+    "face_paint_512_v1": 1,
+    "paprika": 2,
+    "celeba_distill": 3,
 }
 
 
@@ -245,7 +253,13 @@ def available_models() -> list[tuple[str, Path]]:
         key = checkpoint.stem
         label = MODEL_LABELS.get(key, key)
         models.append((label, checkpoint))
-    return models
+    return sorted(
+        models,
+        key=lambda item: (
+            MODEL_PRIORITY.get(item[1].stem, 99),
+            item[1].name.lower(),
+        ),
+    )
 
 
 def save_upload(uploaded_file, directory: Path) -> Path:
@@ -268,6 +282,73 @@ def preview_metadata_bytes(video_bytes: bytes, filename: str) -> dict | None:
             return inspect_video(path)
     except Exception:
         return None
+
+
+def trim_video_bytes(
+    video_bytes: bytes,
+    filename: str,
+    start_seconds: float,
+    end_seconds: float,
+) -> tuple[str, bytes]:
+    """Trim a video accurately with FFmpeg while keeping video and audio."""
+    if end_seconds <= start_seconds:
+        raise ValueError("Thời điểm kết thúc phải lớn hơn thời điểm bắt đầu.")
+
+    ffmpeg_path = find_ffmpeg()
+    if not ffmpeg_path:
+        raise RuntimeError(
+            "Cần FFmpeg để cắt video và giữ audio. Hãy cài FFmpeg rồi khởi động lại Tool."
+        )
+
+    duration = end_seconds - start_seconds
+    trimmed_name = f"{safe_stem(filename)}_trimmed.mp4"
+    with tempfile.TemporaryDirectory(prefix="animegan_trim_") as temp_dir:
+        work_dir = Path(temp_dir)
+        input_path = save_video_bytes(video_bytes, filename, work_dir)
+        output_path = work_dir / trimmed_name
+        command = [
+            str(ffmpeg_path),
+            "-y",
+            "-i",
+            str(input_path),
+            "-ss",
+            f"{start_seconds:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode != 0 or not output_path.is_file():
+            details = result.stderr.strip().splitlines()[-1] if result.stderr else ""
+            suffix = f" Chi tiết: {details}" if details else ""
+            raise RuntimeError(f"FFmpeg không thể cắt video.{suffix}")
+        return trimmed_name, output_path.read_bytes()
 
 
 def download_facebook_video(url: str) -> tuple[str, bytes]:
@@ -477,6 +558,7 @@ def main() -> None:
         )
         source_bytes: bytes | None = None
         source_name: str | None = None
+        source_metadata: dict | None = None
 
         if source_mode == "Reel":
             with st.form("facebook_url_form", border=False):
@@ -513,6 +595,7 @@ def main() -> None:
             source_name = st.session_state.get("remote_video_name")
             if source_bytes and source_name:
                 metadata = preview_metadata_bytes(source_bytes, source_name)
+                source_metadata = metadata
                 st.caption(f"{source_name}  |  {len(source_bytes) / (1024 * 1024):.1f} MB")
                 if metadata:
                     st.video(
@@ -539,6 +622,7 @@ def main() -> None:
                 source_bytes = uploaded_file.getvalue()
                 source_name = uploaded_file.name
                 metadata = preview_metadata(uploaded_file)
+                source_metadata = metadata
                 st.caption(f"{uploaded_file.name}  |  {uploaded_file.size / (1024 * 1024):.1f} MB")
                 if metadata:
                     st.video(
@@ -550,11 +634,92 @@ def main() -> None:
                 else:
                     st.warning("Đã nhận file nhưng OpenCV chưa đọc được metadata video.")
 
+        ffmpeg_available = find_ffmpeg() is not None
+        working_bytes = source_bytes
+        working_name = source_name
+        trim_enabled = False
+        trim_applied = False
+        if source_bytes and source_name:
+            source_signature = hashlib.sha1(source_bytes).hexdigest()
+            if st.session_state.get("trimmed_source_signature") != source_signature:
+                st.session_state.pop("trimmed_video_bytes", None)
+                st.session_state.pop("trimmed_video_name", None)
+                st.session_state.pop("trimmed_source_signature", None)
+
+            trimmed_bytes = st.session_state.get("trimmed_video_bytes")
+            trimmed_name = st.session_state.get("trimmed_video_name")
+            trim_enabled = st.checkbox(
+                "Cắt ngắn video trước khi xử lý",
+                value=False,
+                key="trim_enabled",
+                disabled=not ffmpeg_available or not source_metadata,
+                help="Chọn khoảng thời gian cần giữ lại. FFmpeg sẽ cắt video và giữ audio.",
+            )
+            trim_range: tuple[float, float] | None = None
+            if trim_enabled and source_metadata:
+                original_duration = float(source_metadata.get("duration_seconds_estimated") or 0)
+                if original_duration > 0:
+                    trim_range = st.slider(
+                        "Khoảng thời gian giữ lại (giây)",
+                        min_value=0.0,
+                        max_value=original_duration,
+                        value=(0.0, min(original_duration, 30.0)),
+                        step=0.1,
+                        help="Kéo hai đầu mốc để chọn thời điểm bắt đầu và kết thúc.",
+                    )
+                    trim_start, trim_end = trim_range
+                    if trim_end <= trim_start:
+                        st.error("Thời điểm kết thúc phải lớn hơn thời điểm bắt đầu.")
+                    elif st.button("Áp dụng đoạn cắt", width="stretch"):
+                        try:
+                            with st.status("Đang cắt video...", expanded=False) as status:
+                                trimmed_name, trimmed_bytes = trim_video_bytes(
+                                    source_bytes,
+                                    source_name,
+                                    trim_start,
+                                    trim_end,
+                                )
+                                status.update(label="Đã cắt video", state="complete")
+                            st.session_state["trimmed_video_name"] = trimmed_name
+                            st.session_state["trimmed_video_bytes"] = trimmed_bytes
+                            st.session_state["trimmed_source_signature"] = source_signature
+                            working_name = trimmed_name
+                            working_bytes = trimmed_bytes
+                            trim_applied = True
+                            st.session_state.pop("result_video", None)
+                            st.session_state.pop("result_report", None)
+                            st.success(
+                                f"Đã tạo đoạn video {trim_end - trim_start:.1f} giây."
+                            )
+                        except Exception as error:
+                            st.error(f"Không thể cắt video: {error}")
+                else:
+                    st.warning("Không xác định được thời lượng để cắt video.")
+
+            if trim_enabled and trimmed_bytes and trimmed_name:
+                working_bytes = trimmed_bytes
+                working_name = trimmed_name
+                trim_applied = True
+                trimmed_metadata = preview_metadata_bytes(trimmed_bytes, trimmed_name)
+                st.caption(f"Preview đoạn đã cắt: {trimmed_name}")
+                if trimmed_metadata:
+                    st.video(
+                        trimmed_bytes,
+                        format=video_mime_type(trimmed_name),
+                        width="stretch",
+                    )
+                    render_metadata(trimmed_metadata)
+            elif trim_enabled:
+                st.caption("Chọn khoảng thời gian rồi bấm `Áp dụng đoạn cắt` trước khi xử lý.")
+
         st.markdown("<div class='section-label'>Model setup</div>", unsafe_allow_html=True)
         if not models:
             st.error("Chưa có checkpoint trong thư mục models.")
-            st.code("models/paprika.pt", language="text")
-            st.caption("Tải checkpoint paprika.pt theo hướng dẫn trong README.md rồi khởi động lại tool.")
+            st.code("models/face_paint_512_v2.pt", language="text")
+            st.caption(
+                "Tải checkpoint Face Paint v2 theo hướng dẫn trong README.md rồi "
+                "khởi động lại tool. Có thể dùng paprika.pt cho cảnh không tập trung vào khuôn mặt."
+            )
         else:
             labels = [label for label, _ in models]
             selected_label = st.selectbox("Phong cách", labels, label_visibility="collapsed")
@@ -590,7 +755,6 @@ def main() -> None:
             value=640,
             help="640 là mức cân bằng giữa độ nét và tốc độ; 768 thường nét hơn nhưng chậm hơn và tốn VRAM hơn.",
         )
-        ffmpeg_available = find_ffmpeg() is not None
         keep_audio = st.checkbox(
             "Giữ audio từ video gốc",
             value=ffmpeg_available,
@@ -600,14 +764,14 @@ def main() -> None:
         if not ffmpeg_available:
             st.caption("FFmpeg chưa có trong PATH. Output sẽ chỉ có hình.")
 
-        ready = bool(source_bytes and source_name and models)
+        ready = bool(working_bytes and working_name and models and (not trim_enabled or trim_applied))
         st.markdown("<div class='surface-note'>Video được xử lý tuần tự. Với video dài, CPU có thể mất nhiều thời gian.</div>", unsafe_allow_html=True)
         if st.button("Chuyển thành video hoạt hình", type="primary", width="stretch", disabled=not ready):
             st.session_state.pop("result_video", None)
             try:
                 process_source_video(
-                    source_bytes,
-                    source_name,
+                    working_bytes,
+                    working_name,
                     selected_model,
                     {
                         "device": device,

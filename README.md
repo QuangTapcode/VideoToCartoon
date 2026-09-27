@@ -10,6 +10,7 @@ Tool chuyển video thường thành video hoạt hình bằng **AnimeGANv2 + Py
 - Có thể giữ audio bằng FFmpeg.
 - Tạo video H.264/yuv420p để trình duyệt phát preview ổn định.
 - Nhập video từ máy hoặc dán URL Facebook Reel công khai qua `yt-dlp`.
+- Cắt một khoảng thời gian ngắn từ video dài trước khi chạy AnimeGANv2.
 - Hiển thị metadata, thời gian xử lý, thiết bị GPU và cho tải report JSON.
 - Có công cụ CLI để kiểm tra metadata và validate output độc lập với giao diện.
 
@@ -40,7 +41,12 @@ AnimeGANv2 xử lý độc lập từng frame. Vì vậy, các vùng chi tiết 
 | FFmpeg | Ghép audio và mã hóa H.264 tương thích trình duyệt |
 | yt-dlp | Lấy video từ URL Facebook Reel công khai |
 
-Model mặc định là checkpoint `paprika.pt` từ [bryandlee/animegan2-pytorch](https://github.com/bryandlee/animegan2-pytorch). Kiến trúc Generator tương thích được đặt tại [`models/animegan2.py`](models/animegan2.py). Checkpoint không được commit vào repository; mỗi máy tải riêng vào `models/paprika.pt`.
+Kiến trúc Generator tương thích được đặt tại [`models/animegan2.py`](models/animegan2.py). Tool hiện có hai hướng sử dụng chính:
+
+- `face_paint_512_v2.pt`: style ưu tiên cho chân dung, được chọn đầu tiên khi file có trong `models/`.
+- `paprika.pt`: style anime tổng quát, phù hợp hơn với cảnh rộng, vật thể và video không tập trung vào khuôn mặt.
+
+Các checkpoint được cung cấp bởi [bryandlee/animegan2-pytorch](https://github.com/bryandlee/animegan2-pytorch). Checkpoint không được commit vào repository; mỗi máy tải riêng vào `models/`.
 
 ## Yêu cầu
 
@@ -76,7 +82,15 @@ ffmpeg -version
 
 ## Tải checkpoint
 
-Tạo thư mục `models` nếu chưa có, sau đó tải checkpoint `paprika.pt`:
+Để chuyển video chân dung theo Face Paint v2, tải checkpoint `face_paint_512_v2.pt`:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/bryandlee/animegan2-pytorch/raw/main/weights/face_paint_512_v2.pt" `
+  -OutFile "models\face_paint_512_v2.pt"
+```
+
+Để dùng style anime tổng quát `paprika`:
 
 ```powershell
 Invoke-WebRequest `
@@ -84,7 +98,7 @@ Invoke-WebRequest `
   -OutFile "models\paprika.pt"
 ```
 
-Có thể dùng checkpoint khác nếu kiến trúc tương thích, nhưng cần đặt file vào `models/` và chọn nó trong giao diện. Không đưa checkpoint, video cá nhân hoặc video kết quả vào Git.
+Có thể dùng checkpoint khác nếu kiến trúc tương thích, nhưng cần đặt file vào `models/` và chọn nó trong giao diện. Khi có cả hai file, `Face Paint v2 (512)` được ưu tiên hiển thị đầu tiên. Checkpoint được huấn luyện ở 512×512; tham số `load-size` vẫn có thể chọn `640` hoặc `768` để cân bằng độ nét và tốc độ. Không đưa checkpoint, video cá nhân hoặc video kết quả vào Git.
 
 ## Chạy giao diện
 
@@ -105,10 +119,13 @@ Mở địa chỉ Streamlit hiển thị trong terminal, thường là `http://l
 1. Chọn `Tải file từ máy` để upload video hoặc chọn `Link Facebook Reel`.
 2. Với Facebook, dán URL Reel công khai rồi bấm `Lấy video từ Facebook`.
 3. Kiểm tra preview và metadata: độ phân giải, FPS, số frame, thời lượng.
-4. Chọn style/checkpoint, thiết bị, batch size và kích thước suy luận.
-5. Bật `Giữ audio từ video gốc` nếu đã cài FFmpeg.
-6. Bấm `Chuyển thành video hoạt hình`.
-7. Xem video đầu vào/kết quả trong trình duyệt, tải video và report JSON.
+4. Nếu video dài, bật `Cắt ngắn video trước khi xử lý`, kéo hai mốc thời gian, rồi bấm `Áp dụng đoạn cắt`.
+5. Chọn `Face Paint v2 (512)` cho video chân dung; chọn `Paprika` cho cảnh tổng quát, sau đó chọn thiết bị, batch size và kích thước suy luận.
+6. Bật `Giữ audio từ video gốc` nếu đã cài FFmpeg.
+7. Bấm `Chuyển thành video hoạt hình`.
+8. Xem video đầu vào/kết quả trong trình duyệt, tải video và report JSON.
+
+Đoạn cắt được mã hóa thành MP4 H.264/yuv420p bằng FFmpeg trước khi đưa vào AnimeGANv2. Vì vậy, pipeline chỉ xử lý số frame trong đoạn đã chọn và audio của đoạn đó được giữ lại. Với Facebook Reel, tool vẫn phải tải video nguồn trước rồi mới cắt cục bộ.
 
 ### Chọn tham số chất lượng và tốc độ
 
@@ -207,12 +224,14 @@ VideotoCartoon/
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |
-| `Chưa có checkpoint` | Tải `paprika.pt` vào `models/paprika.pt`. |
+| `Chưa có checkpoint` | Tải `face_paint_512_v2.pt` hoặc `paprika.pt` vào thư mục `models/`. |
 | CUDA không được dùng | Kiểm tra `torch.cuda.is_available()` và cài đúng profile `requirements-gpu.txt`. |
 | CUDA out of memory | Giảm batch size hoặc load size. |
 | Không giữ được audio | Cài FFmpeg và bật giữ audio; OpenCV không tự ghi audio. |
 | Trình duyệt không phát output | Chạy với `--browser-compatible` hoặc dùng nút tải video để mở bằng trình phát khác. |
 | Facebook không tải được | Dùng Reel công khai, URL HTTPS hợp lệ; nếu vẫn lỗi, tải file hợp pháp về máy rồi upload local. |
+| Không thấy nút cắt | Cài FFmpeg và kiểm tra `ffmpeg -version`; tính năng cắt cần FFmpeg để giữ audio. |
+| Đã cắt nhưng vẫn xử lý toàn bộ video | Bấm `Áp dụng đoạn cắt` sau khi chọn khoảng thời gian; preview đoạn đã cắt phải xuất hiện trước khi chuyển đổi. |
 | Video hơi mờ | Tăng load size lên `768` nếu đủ VRAM; chất lượng vẫn bị giới hạn bởi video nguồn và checkpoint. |
 | Nhấp nháy giữa các frame | Đây là giới hạn của suy luận từng frame; pipeline hiện chưa có temporal consistency. |
 
